@@ -105,13 +105,10 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeCompletion(
         llama_tokenize(mc->vocab, prompt.c_str(), (int32_t)prompt.size(), tokens.data(), (int32_t)tokens.size(), true, true);
     }
 
-    // =====================================================
-    // SOLUÇÃO DO CACHE: Inicialização limpa do lote a cada chamada
-    // =====================================================
     llama_batch batch = llama_batch_get_one(tokens.data(), (int32_t)tokens.size());
 
     // =====================================================
-    // CADEIA DE SAMPLING (Alinhado com PocketPal)
+    // CADEIA DE SAMPLING (Exatamente os parâmetros do PocketPal)
     // =====================================================
     llama_sampler_chain_params sparams = llama_sampler_chain_default_params();
     llama_sampler *smpl = llama_sampler_chain_init(sparams);
@@ -134,13 +131,15 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeCompletion(
         }
 
         llama_token novo = llama_sampler_sample(smpl, mc->ctx, -1);
+        
+        // AJUSTE CRUCIAL: Notificar o sampler do token gerado para atualizar as repetições
         llama_sampler_accept(smpl, novo);
 
         if (llama_vocab_is_eog(mc->vocab, novo)) {
             break;
         }
 
-        // Buffer estático de 64 posições para acomodar caracteres UTF-8 parciais
+        // Buffer estático correto de 64 bytes para caracteres UTF-8 mutáveis
         char buf[64];
         int n = llama_token_to_piece(mc->vocab, novo, buf, sizeof(buf), 0, true);
 
