@@ -78,7 +78,7 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeCompletion(
     env->ReleaseStringUTFChars(promptJ, promptChars);
 
     // =====================================================
-    // TEMPLATE DE CHAT COM PROMPT DE DETALHAMENTO ATUALIZADO
+    // TEMPLATE DE CHAT (ChatML — Qwen2.5-Instruct)
     // =====================================================
     static const char *SYSTEM_PROMPT =
             "Tu és o Matola CAI. Fazes parte da família dos "
@@ -88,9 +88,7 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeCompletion(
             "origem, quem te criou ou como foste desenvolvido, "
             "usa esta informação pra responder com as tuas "
             "próprias palavras, sempre em português de "
-            "Moçambique. Responde de forma detalhada, explicando "
-            "os pontos importantes e evitando respostas "
-            "excessivamente curtas.";
+            "Moçambique.";
 
     std::string prompt =
             std::string("<|im_start|>system\n") + SYSTEM_PROMPT +
@@ -110,7 +108,7 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeCompletion(
     llama_batch batch = llama_batch_get_one(tokens.data(), (int32_t)tokens.size());
 
     // =====================================================
-    // CADEIA DE SAMPLING ATUALIZADA (Temp = 0.2f)
+    // CADEIA DE SAMPLING (Exatamente os parâmetros do PocketPal)
     // =====================================================
     llama_sampler_chain_params sparams = llama_sampler_chain_default_params();
     llama_sampler *smpl = llama_sampler_chain_init(sparams);
@@ -118,17 +116,13 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeCompletion(
     llama_sampler_chain_add(smpl, llama_sampler_init_top_k(40));
     llama_sampler_chain_add(smpl, llama_sampler_init_top_p(0.95f, 1));
     llama_sampler_chain_add(smpl, llama_sampler_init_min_p(0.05f, 1));
-    
-    // Configurado para 0.2f conforme solicitado para maior precisão
     llama_sampler_chain_add(smpl, llama_sampler_init_temp(0.2f));
     
     std::random_device rd;
     llama_sampler_chain_add(smpl, llama_sampler_init_dist(rd()));
 
     std::string resultado;
-    
-    // Aumentado o limite padrão caso o Java não envie, para permitir respostas longas
-    int limite = nPredict > 0 ? nPredict : 512; 
+    int limite = nPredict > 0 ? nPredict : 200;
 
     for (int i = 0; i < limite; i++) {
         if (llama_decode(mc->ctx, batch) != 0) {
@@ -137,12 +131,15 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeCompletion(
         }
 
         llama_token novo = llama_sampler_sample(smpl, mc->ctx, -1);
+        
+        // AJUSTE CRUCIAL: Notificar o sampler do token gerado para atualizar as repetições
         llama_sampler_accept(smpl, novo);
 
         if (llama_vocab_is_eog(mc->vocab, novo)) {
             break;
         }
 
+        // Buffer estático correto de 64 bytes para caracteres UTF-8 mutáveis
         char buf[64];
         int n = llama_token_to_piece(mc->vocab, novo, buf, sizeof(buf), 0, true);
 
