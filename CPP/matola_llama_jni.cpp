@@ -86,7 +86,6 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeCompletion(
         llama_tokenize(mc->vocab, prompt.c_str(), (int32_t)prompt.size(), tokens.data(), (int32_t)tokens.size(), true, true);
     }
 
-    // Usando apenas parâmetros simples e estáveis para contornar a quebra da API de penalidades anteriores
     llama_sampler *sampler = llama_sampler_chain_init(llama_sampler_chain_default_params());
     llama_sampler_chain_add(sampler, llama_sampler_init_temp(0.7f));
 
@@ -107,6 +106,7 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeCompletion(
             break;
         }
 
+        // CORREÇÃO: Alocado buffer de tamanho correto para receber a string parcial do token
         char buf[256];
         int n = llama_token_to_piece(mc->vocab, novo, buf, sizeof(buf), 0, true);
 
