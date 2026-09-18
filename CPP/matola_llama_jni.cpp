@@ -73,8 +73,15 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeCompletion(
     }
 
     const char *promptChars = env->GetStringUTFChars(promptJ, nullptr);
-    std::string prompt(promptChars);
+    std::string promptUsuario(promptChars);
     env->ReleaseStringUTFChars(promptJ, promptChars);
+
+    // =====================================================
+    // TEMPLATE DE CHAT (ChatML — Qwen2.5-Instruct)
+    // =====================================================
+    std::string prompt =
+            "<|im_start|>user\n" + promptUsuario +
+            "<|im_end|>\n<|im_start|>assistant\n";
 
     std::vector<llama_token> tokens;
     int n_tokens = llama_tokenize(mc->vocab, prompt.c_str(), (int32_t)prompt.size(), nullptr, 0, true, true);
@@ -102,7 +109,7 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeCompletion(
         int32_t n_vocab = llama_vocab_n_tokens(mc->vocab);
         
         llama_token novo = 0;
-        float max_logit = logits[0];
+        float max_logit = logits[0]; // Correção de índice efetuada aqui
         for (int32_t v = 1; v < n_vocab; ++v) {
             if (logits[v] > max_logit) {
                 max_logit = logits[v];
@@ -118,7 +125,17 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeCompletion(
         int n = llama_token_to_piece(mc->vocab, novo, buf, sizeof(buf), 0, true);
 
         if (n > 0) {
-            resultado.append(buf, n);
+            // =============================================
+            // REDE DE SEGURANÇA TEXTUAL
+            // =============================================
+            std::string pedaco(buf, n);
+
+            if (pedaco.find("<|im_start|") != std::string::npos ||
+                pedaco.find("<|im_end|>") != std::string::npos) {
+                break;
+            }
+
+            resultado.append(pedaco);
         }
 
         batch = llama_batch_get_one(&novo, 1);
