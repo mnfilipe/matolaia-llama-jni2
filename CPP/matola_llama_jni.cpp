@@ -79,8 +79,19 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeCompletion(
     // =====================================================
     // TEMPLATE DE CHAT (ChatML — Qwen2.5-Instruct)
     // =====================================================
+    static const char *SYSTEM_PROMPT =
+            "Tu és o Matola CAI. Fazes parte da família dos "
+            "Modelos de Cadernos Artificiais Desenvolvidos em "
+            "Moçambique, criados pelo pesquisador Filipe Paulo "
+            "Felipe. Quando te perguntarem quem és, a tua "
+            "origem, quem te criou ou como foste desenvolvido, "
+            "usa esta informação pra responder com as tuas "
+            "próprias palavras, sempre em português de "
+            "Moçambique.";
+
     std::string prompt =
-            "<|im_start|>user\n" + promptUsuario +
+            std::string("<|im_start|>system\n") + SYSTEM_PROMPT +
+            "<|im_end|>\n<|im_start|>user\n" + promptUsuario +
             "<|im_end|>\n<|im_start|>assistant\n";
 
     std::vector<llama_token> tokens;
@@ -104,12 +115,12 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeCompletion(
             break;
         }
 
-        // Amostragem nativa Greedy: Pega diretamente o token com a maior probabilidade (Logit)
+        // Amostragem nativa Greedy
         auto * logits = llama_get_logits_ith(mc->ctx, batch.n_tokens - 1);
         int32_t n_vocab = llama_vocab_n_tokens(mc->vocab);
         
         llama_token novo = 0;
-        float max_logit = logits[0]; // Correção de índice efetuada aqui
+        float max_logit = logits[0];
         for (int32_t v = 1; v < n_vocab; ++v) {
             if (logits[v] > max_logit) {
                 max_logit = logits[v];
@@ -121,6 +132,7 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeCompletion(
             break;
         }
 
+        // CORREÇÃO: Utilização correta de buffer com tamanho estático de 64 posições
         char buf[64];
         int n = llama_token_to_piece(mc->vocab, novo, buf, sizeof(buf), 0, true);
 
