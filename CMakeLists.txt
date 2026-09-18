@@ -15,9 +15,10 @@ set(LLAMA_BUILD_SERVER OFF CACHE BOOL "" FORCE)
 # O checkout do Actions vai clonar o llama.cpp para esta pasta.
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp)
 
-# Ajustado para CPP em letras maiúsculas para bater com o seu repositório
+# Usar os ficheiros necessários diretamente para evitar o erro de linkagem do -lcommon
 add_library(matola_llama SHARED
     ${CMAKE_CURRENT_SOURCE_DIR}/CPP/matola_llama_jni.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/common/common.cpp
 )
 
 target_include_directories(matola_llama PRIVATE
@@ -27,9 +28,9 @@ target_include_directories(matola_llama PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/common
 )
 
+# Removido o 'common' daqui para eliminar o erro do linker!
 target_link_libraries(matola_llama
     llama
-    common
     log
     android
 )
