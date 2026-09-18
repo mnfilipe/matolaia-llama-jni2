@@ -10,11 +10,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout do repositório
+      - name: Checkout do repositório principal
         uses: actions/checkout@v4
 
-      - name: Clonar llama.cpp
-        run: git clone --depth=1 https://github.com
+      - name: Clonar llama.cpp corretamente
+        uses: actions/checkout@v4
+        with:
+          repository: ggml-org/llama.cpp
+          path: llama.cpp
+          fetch-depth: 1
 
       - name: Instalar o NDK
         uses: nttld/setup-ndk@v1
