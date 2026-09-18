@@ -74,9 +74,9 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeCompletion(
     }
 
     // =====================================================
-    // CORREÇÃO: Limpar a memória KV cache da forma correta
+    // CORREÇÃO: Função oficial atual da API para limpar o cache
     // =====================================================
-    llama_kv_cache_clear(mc->ctx);
+    llama_kv_cache_rm_all(mc->ctx);
 
     const char *promptChars = env->GetStringUTFChars(promptJ, nullptr);
     std::string promptUsuario(promptChars);
@@ -113,7 +113,7 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeCompletion(
     llama_batch batch = llama_batch_get_one(tokens.data(), (int32_t)tokens.size());
 
     // =====================================================
-    // CADEIA DE SAMPLING (Alinhado com a nova API estável)
+    // CADEIA DE SAMPLING (Alinhado com PocketPal)
     // =====================================================
     llama_sampler_chain_params sparams = llama_sampler_chain_default_params();
     llama_sampler *smpl = llama_sampler_chain_init(sparams);
@@ -123,7 +123,6 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeCompletion(
     llama_sampler_chain_add(smpl, llama_sampler_init_min_p(0.05f, 1));
     llama_sampler_chain_add(smpl, llama_sampler_init_temp(0.7f));
     
-    // CORREÇÃO: Seed gerado dinamicamente para substituir a constante antiga
     std::random_device rd;
     llama_sampler_chain_add(smpl, llama_sampler_init_dist(rd()));
 
@@ -143,6 +142,7 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeCompletion(
             break;
         }
 
+        // CORREÇÃO: Alocação correta de buffer com 64 posições para evitar quebra por tipo
         char buf[64];
         int n = llama_token_to_piece(mc->vocab, novo, buf, sizeof(buf), 0, true);
 
