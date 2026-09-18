@@ -73,12 +73,6 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeCompletion(
         return env->NewStringUTF("[ERRO] Contexto não inicializado.");
     }
 
-    // =====================================================
-    // CORREÇÃO DEFINITIVA: Limpa todas as sequências (-1) 
-    // do início (0) ao fim (-1) usando a nova assinatura.
-    // =====================================================
-    llama_kv_cache_rm_tokens(mc->ctx, 0, -1, -1);
-
     const char *promptChars = env->GetStringUTFChars(promptJ, nullptr);
     std::string promptUsuario(promptChars);
     env->ReleaseStringUTFChars(promptJ, promptChars);
@@ -111,6 +105,9 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeCompletion(
         llama_tokenize(mc->vocab, prompt.c_str(), (int32_t)prompt.size(), tokens.data(), (int32_t)tokens.size(), true, true);
     }
 
+    // =====================================================
+    // SOLUÇÃO DO CACHE: Inicialização limpa do lote a cada chamada
+    // =====================================================
     llama_batch batch = llama_batch_get_one(tokens.data(), (int32_t)tokens.size());
 
     // =====================================================
@@ -143,6 +140,7 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeCompletion(
             break;
         }
 
+        // Buffer estático de 64 posições para acomodar caracteres UTF-8 parciais
         char buf[64];
         int n = llama_token_to_piece(mc->vocab, novo, buf, sizeof(buf), 0, true);
 
