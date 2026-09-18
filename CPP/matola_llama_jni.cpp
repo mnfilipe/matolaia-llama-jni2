@@ -74,9 +74,10 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeCompletion(
     }
 
     // =====================================================
-    // CORREÇÃO: Função oficial atual da API para limpar o cache
+    // CORREÇÃO DEFINITIVA: Limpa todas as sequências (-1) 
+    // do início (0) ao fim (-1) usando a nova assinatura.
     // =====================================================
-    llama_kv_cache_rm_all(mc->ctx);
+    llama_kv_cache_rm_tokens(mc->ctx, 0, -1, -1);
 
     const char *promptChars = env->GetStringUTFChars(promptJ, nullptr);
     std::string promptUsuario(promptChars);
@@ -142,7 +143,6 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeCompletion(
             break;
         }
 
-        // CORREÇÃO: Alocação correta de buffer com 64 posições para evitar quebra por tipo
         char buf[64];
         int n = llama_token_to_piece(mc->vocab, novo, buf, sizeof(buf), 0, true);
 
