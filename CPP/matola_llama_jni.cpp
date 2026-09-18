@@ -86,9 +86,6 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeCompletion(
         llama_tokenize(mc->vocab, prompt.c_str(), (int32_t)prompt.size(), tokens.data(), (int32_t)tokens.size(), true, true);
     }
 
-    llama_sampler *sampler = llama_sampler_chain_init(llama_sampler_chain_default_params());
-    llama_sampler_chain_add(sampler, llama_sampler_init_temp(0.7f));
-
     llama_batch batch = llama_batch_get_one(tokens.data(), (int32_t)tokens.size());
 
     std::string resultado;
@@ -100,14 +97,24 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeCompletion(
             break;
         }
 
-        llama_token novo = llama_sampler_sample(sampler, mc->ctx, -1);
+        // Amostragem nativa Greedy: Pega diretamente o token com a maior probabilidade (Logit)
+        auto * logits = llama_get_logits_ith(mc->ctx, batch.n_tokens - 1);
+        int32_t n_vocab = llama_vocab_n_tokens(mc->vocab);
+        
+        llama_token novo = 0;
+        float max_logit = logits[0];
+        for (int32_t v = 1; v < n_vocab; ++v) {
+            if (logits[v] > max_logit) {
+                max_logit = logits[v];
+                novo = v;
+            }
+        }
 
         if (llama_vocab_is_eog(mc->vocab, novo)) {
             break;
         }
 
-        // CORREÇÃO: Alocado buffer de tamanho correto para receber a string parcial do token
-        char buf[256];
+        char buf[64];
         int n = llama_token_to_piece(mc->vocab, novo, buf, sizeof(buf), 0, true);
 
         if (n > 0) {
@@ -116,8 +123,6 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeCompletion(
 
         batch = llama_batch_get_one(&novo, 1);
     }
-
-    llama_sampler_free(sampler);
 
     return env->NewStringUTF(resultado.c_str());
 }
