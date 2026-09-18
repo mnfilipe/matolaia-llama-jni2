@@ -1,7 +1,3 @@
-// =====================================================================
-// PONTE JNI CORRIGIDA PARA A NOVA API DO LLAMA.CPP
-// =====================================================================
-
 #include <jni.h>
 #include <string>
 #include <vector>
@@ -80,8 +76,6 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeCompletion(
     std::string prompt(promptChars);
     env->ReleaseStringUTFChars(promptJ, promptChars);
 
-    // ---- Tokenizar o prompt com a nova assinatura ----
-    // Descobrir o tamanho necessário passando vetor vazio
     std::vector<llama_token> tokens;
     int n_tokens = llama_tokenize(mc->vocab, prompt.c_str(), (int32_t)prompt.size(), nullptr, 0, true, true);
     if (n_tokens < 0) {
@@ -92,15 +86,9 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeCompletion(
         llama_tokenize(mc->vocab, prompt.c_str(), (int32_t)prompt.size(), tokens.data(), (int32_t)tokens.size(), true, true);
     }
 
-    // ---- Nova Estrutura do Sampler de Acordo com a API Atual ----
+    // Usando apenas parâmetros simples e estáveis para contornar a quebra da API de penalidades anteriores
     llama_sampler *sampler = llama_sampler_chain_init(llama_sampler_chain_default_params());
-    
-    // Adicionar as penalidades ajustadas para a nova estrutura de parâmetros
-    llama_sampler_chain_add(sampler, llama_sampler_init_penalties(64, 1.3f, 0.0f, 0.0f));
     llama_sampler_chain_add(sampler, llama_sampler_init_temp(0.7f));
-    llama_sampler_chain_add(sampler, llama_sampler_init_top_k(40));
-    llama_sampler_chain_add(sampler, llama_sampler_init_top_p(0.9f, 1));
-    llama_sampler_chain_add(sampler, llama_sampler_init_dist(1234));
 
     llama_batch batch = llama_batch_get_one(tokens.data(), (int32_t)tokens.size());
 
@@ -113,7 +101,6 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeCompletion(
             break;
         }
 
-        // Nova assinatura de amostragem
         llama_token novo = llama_sampler_sample(sampler, mc->ctx, -1);
 
         if (llama_vocab_is_eog(mc->vocab, novo)) {
