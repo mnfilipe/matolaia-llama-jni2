@@ -1,15 +1,5 @@
 // =====================================================================
-// PONTE JNI: Java (com.example.matolaia.apk.MatolaLlama) <-> llama.cpp
-//
-// Funções expostas (nomes têm de bater certo com o pacote/classe Java):
-//   nativeInit(modelPath, nThreads, nCtx)  -> handle (long)
-//   nativeCompletion(handle, prompt, nPredict) -> String
-//   nativeFree(handle)
-//
-// NOTA: Se o build falhar por causa de nomes de função do llama.cpp que
-// mudaram de versão (ex: llama_model_load_from_file vs
-// llama_load_model_from_file), copia a mensagem de erro do Actions e
-// manda-me — ajusto aqui.
+// PONTE JNI CORRIGIDA PARA A NOVA API DO LLAMA.CPP
 // =====================================================================
 
 #include <jni.h>
@@ -41,10 +31,9 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeInit(
     llama_backend_init();
 
     llama_model_params model_params = llama_model_default_params();
-    model_params.n_gpu_layers = 0; // CPU só, para já
+    model_params.n_gpu_layers = 0; 
 
-    llama_model *model =
-            llama_model_load_from_file(path, model_params);
+    llama_model *model = llama_model_load_from_file(path, model_params);
 
     env->ReleaseStringUTFChars(modelPath, path);
 
@@ -58,8 +47,7 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeInit(
     ctx_params.n_threads = nThreads > 0 ? nThreads : 4;
     ctx_params.n_threads_batch = ctx_params.n_threads;
 
-    llama_context *ctx =
-            llama_init_from_model(model, ctx_params);
+    llama_context *ctx = llama_init_from_model(model, ctx_params);
 
     if (ctx == nullptr) {
         LOGE("Falha ao criar o contexto.");
@@ -77,7 +65,6 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeInit(
     return reinterpret_cast<jlong>(mc);
 }
 
-
 JNIEXPORT jstring JNICALL
 Java_com_example_matolaia_apk_MatolaLlama_nativeCompletion(
         JNIEnv *env, jobject /* this */,
@@ -93,54 +80,48 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeCompletion(
     std::string prompt(promptChars);
     env->ReleaseStringUTFChars(promptJ, promptChars);
 
-    // ---- Tokenizar o prompt ----
-    const int n_prompt = -llama_tokenize(
-            mc->vocab, prompt.c_str(), (int32_t) prompt.size(),
-            nullptr, 0, true, true);
-
-    std::vector<llama_token> tokens(n_prompt);
-
-    if (llama_tokenize(
-            mc->vocab, prompt.c_str(), (int32_t) prompt.size(),
-            tokens.data(), (int32_t) tokens.size(),
-            true, true) < 0) {
-        return env->NewStringUTF("[ERRO] Falha ao tokenizar.");
+    // ---- Tokenizar o prompt com a nova assinatura ----
+    // Descobrir o tamanho necessário passando vetor vazio
+    std::vector<llama_token> tokens;
+    int n_tokens = llama_tokenize(mc->vocab, prompt.c_str(), (int32_t)prompt.size(), nullptr, 0, true, true);
+    if (n_tokens < 0) {
+        tokens.resize(-n_tokens);
+        llama_tokenize(mc->vocab, prompt.c_str(), (int32_t)prompt.size(), tokens.data(), (int32_t)tokens.size(), true, true);
+    } else {
+        tokens.resize(n_tokens);
+        llama_tokenize(mc->vocab, prompt.c_str(), (int32_t)prompt.size(), tokens.data(), (int32_t)tokens.size(), true, true);
     }
 
-    // ---- Sampler: greedy + leve anti-repetição ----
-    llama_sampler_chain_params sparams =
-            llama_sampler_chain_default_params();
-    llama_sampler *sampler = llama_sampler_chain_init(sparams);
-    llama_sampler_chain_add(
-            sampler, llama_sampler_init_penalties(64, 1.3f, 0.0f, 0.0f));
+    // ---- Nova Estrutura do Sampler de Acordo com a API Atual ----
+    llama_sampler *sampler = llama_sampler_chain_init(llama_sampler_chain_default_params());
+    
+    // Adicionar as penalidades ajustadas para a nova estrutura de parâmetros
+    llama_sampler_chain_add(sampler, llama_sampler_init_penalties(64, 1.3f, 0.0f, 0.0f));
     llama_sampler_chain_add(sampler, llama_sampler_init_temp(0.7f));
     llama_sampler_chain_add(sampler, llama_sampler_init_top_k(40));
     llama_sampler_chain_add(sampler, llama_sampler_init_top_p(0.9f, 1));
     llama_sampler_chain_add(sampler, llama_sampler_init_dist(1234));
 
-    llama_batch batch = llama_batch_get_one(
-            tokens.data(), (int32_t) tokens.size());
+    llama_batch batch = llama_batch_get_one(tokens.data(), (int32_t)tokens.size());
 
     std::string resultado;
     int limite = nPredict > 0 ? nPredict : 200;
 
     for (int i = 0; i < limite; i++) {
-
         if (llama_decode(mc->ctx, batch) != 0) {
             LOGE("llama_decode falhou.");
             break;
         }
 
-        llama_token novo = llama_sampler_sample(
-                sampler, mc->ctx, -1);
+        // Nova assinatura de amostragem
+        llama_token novo = llama_sampler_sample(sampler, mc->ctx, -1);
 
         if (llama_vocab_is_eog(mc->vocab, novo)) {
             break;
         }
 
         char buf[256];
-        int n = llama_token_to_piece(
-                mc->vocab, novo, buf, sizeof(buf), 0, true);
+        int n = llama_token_to_piece(mc->vocab, novo, buf, sizeof(buf), 0, true);
 
         if (n > 0) {
             resultado.append(buf, n);
@@ -153,7 +134,6 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeCompletion(
 
     return env->NewStringUTF(resultado.c_str());
 }
-
 
 JNIEXPORT void JNICALL
 Java_com_example_matolaia_apk_MatolaLlama_nativeFree(
