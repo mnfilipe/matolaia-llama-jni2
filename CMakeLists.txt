@@ -13,17 +13,18 @@ set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_SERVER OFF CACHE BOOL "" FORCE)
 
 # O checkout do Actions vai clonar o llama.cpp para esta pasta.
-add_subdirectory(llama.cpp)
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp)
 
+# Ajustado para CPP em letras maiúsculas para bater com o seu repositório
 add_library(matola_llama SHARED
-    cpp/matola_llama_jni.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/CPP/matola_llama_jni.cpp
 )
 
 target_include_directories(matola_llama PRIVATE
-    llama.cpp
-    llama.cpp/include
-    llama.cpp/ggml/include
-    llama.cpp/common
+    ${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/ggml/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/common
 )
 
 target_link_libraries(matola_llama
