@@ -4,7 +4,7 @@ project(matola_llama)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Só CPU, sem GPU/Vulkan/OpenCL — mantém o build simples e previsível.
+# Só CPU, sem GPU — mantém o build previsível.
 set(GGML_VULKAN OFF CACHE BOOL "" FORCE)
 set(GGML_OPENCL OFF CACHE BOOL "" FORCE)
 set(LLAMA_CURL OFF CACHE BOOL "" FORCE)
@@ -15,20 +15,18 @@ set(LLAMA_BUILD_SERVER OFF CACHE BOOL "" FORCE)
 # O checkout do Actions vai clonar o llama.cpp para esta pasta.
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp)
 
-# Usar os ficheiros necessários diretamente para evitar o erro de linkagem do -lcommon
+# Compila estritamente o seu ficheiro da ponte JNI
 add_library(matola_llama SHARED
     ${CMAKE_CURRENT_SOURCE_DIR}/CPP/matola_llama_jni.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/common/common.cpp
 )
 
 target_include_directories(matola_llama PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/include
     ${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/ggml/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/common
 )
 
-# Removido o 'common' daqui para eliminar o erro do linker!
+# Linkagem direta e limpa apenas com o core da biblioteca
 target_link_libraries(matola_llama
     llama
     log
