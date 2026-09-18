@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 #include <android/log.h>
+#include <random>
 
 #include "llama.h"
 
@@ -72,6 +73,11 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeCompletion(
         return env->NewStringUTF("[ERRO] Contexto não inicializado.");
     }
 
+    // =====================================================
+    // CORREÇÃO: Limpar a memória KV cache da forma correta
+    // =====================================================
+    llama_kv_cache_clear(mc->ctx);
+
     const char *promptChars = env->GetStringUTFChars(promptJ, nullptr);
     std::string promptUsuario(promptChars);
     env->ReleaseStringUTFChars(promptJ, promptChars);
@@ -106,6 +112,21 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeCompletion(
 
     llama_batch batch = llama_batch_get_one(tokens.data(), (int32_t)tokens.size());
 
+    // =====================================================
+    // CADEIA DE SAMPLING (Alinhado com a nova API estável)
+    // =====================================================
+    llama_sampler_chain_params sparams = llama_sampler_chain_default_params();
+    llama_sampler *smpl = llama_sampler_chain_init(sparams);
+
+    llama_sampler_chain_add(smpl, llama_sampler_init_top_k(40));
+    llama_sampler_chain_add(smpl, llama_sampler_init_top_p(0.95f, 1));
+    llama_sampler_chain_add(smpl, llama_sampler_init_min_p(0.05f, 1));
+    llama_sampler_chain_add(smpl, llama_sampler_init_temp(0.7f));
+    
+    // CORREÇÃO: Seed gerado dinamicamente para substituir a constante antiga
+    std::random_device rd;
+    llama_sampler_chain_add(smpl, llama_sampler_init_dist(rd()));
+
     std::string resultado;
     int limite = nPredict > 0 ? nPredict : 200;
 
@@ -115,24 +136,13 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeCompletion(
             break;
         }
 
-        // Amostragem nativa Greedy
-        auto * logits = llama_get_logits_ith(mc->ctx, batch.n_tokens - 1);
-        int32_t n_vocab = llama_vocab_n_tokens(mc->vocab);
-        
-        llama_token novo = 0;
-        float max_logit = logits[0];
-        for (int32_t v = 1; v < n_vocab; ++v) {
-            if (logits[v] > max_logit) {
-                max_logit = logits[v];
-                novo = v;
-            }
-        }
+        llama_token novo = llama_sampler_sample(smpl, mc->ctx, -1);
+        llama_sampler_accept(smpl, novo);
 
         if (llama_vocab_is_eog(mc->vocab, novo)) {
             break;
         }
 
-        // CORREÇÃO: Utilização correta de buffer com tamanho estático de 64 posições
         char buf[64];
         int n = llama_token_to_piece(mc->vocab, novo, buf, sizeof(buf), 0, true);
 
@@ -152,6 +162,8 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeCompletion(
 
         batch = llama_batch_get_one(&novo, 1);
     }
+
+    llama_sampler_free(smpl);
 
     return env->NewStringUTF(resultado.c_str());
 }
