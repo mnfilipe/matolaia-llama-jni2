@@ -3,6 +3,7 @@
 #include <vector>
 #include <android/log.h>
 #include <random>
+#include <cctype>
 
 #include "llama.h"
 
@@ -41,6 +42,66 @@ static void aparar_utf8_incompleto(std::string &s) {
     size_t precisa = lead >= 0xF0 ? 4 : (lead >= 0xE0 ? 3 : (lead >= 0xC0 ? 2 : 1));
     size_t tem = static_cast<size_t>(cont) + 1;
     if (tem < precisa) s.erase(i - 1);
+}
+
+// Normaliza para procurar frases: minúsculas, sem acentos, pontuação vira espaço.
+static std::string normalizar_para_busca(const std::string &in) {
+    std::string out;
+    out.reserve(in.size() + 2);
+    auto separador = [&out]() {
+        if (!out.empty() && out.back() != ' ') out += ' ';
+    };
+    for (size_t i = 0; i < in.size(); i++) {
+        unsigned char c = static_cast<unsigned char>(in[i]);
+        if (c < 0x80) {
+            if (std::isalnum(c)) out += static_cast<char>(std::tolower(c));
+            else separador();
+            continue;
+        }
+        if (c == 0xC3 && i + 1 < in.size()) {
+            unsigned char d = static_cast<unsigned char>(in[++i]);
+            if (d >= 0x80 && d <= 0x9F) d += 0x20; // maiúscula -> minúscula
+            char base = 0;
+            switch (d) {
+                case 0xA0: case 0xA1: case 0xA2: case 0xA3: base = 'a'; break;
+                case 0xA7: base = 'c'; break;
+                case 0xA8: case 0xA9: case 0xAA: base = 'e'; break;
+                case 0xAC: case 0xAD: base = 'i'; break;
+                case 0xB2: case 0xB3: case 0xB4: case 0xB5: base = 'o'; break;
+                case 0xB9: case 0xBA: base = 'u'; break;
+            }
+            if (base) out += base; else separador();
+            continue;
+        }
+        separador();
+    }
+    return out;
+}
+
+// A identidade (Matola CAI / Filipe Paulo Felipe / Moçambique) só entra no
+// prompt quando a pergunta é sobre o próprio modelo. Num modelo de 350M, um
+// system prompt fixo "vaza" para respostas que não têm nada a ver.
+// A busca é por palavras inteiras (" quem es " não apanha "quem escreveu").
+static bool pergunta_sobre_identidade(const std::string &pergunta) {
+    static const char *CHAVES[] = {
+        "quem es", "quem e voce", "quem e tu", "o que es", "o que e voce",
+        "como te chamas", "como voce se chama",
+        "qual e o teu nome", "qual e o seu nome",
+        "teu criador", "seu criador", "teus criadores", "tua origem",
+        "te criou", "te fez", "te desenvolveu", "te programou", "te treinou",
+        "te inventou", "te construiu", "te criaram", "te desenvolveram",
+        "criou te", "fez te", "desenvolveu te", "programou te",
+        "criou voce", "fez voce", "desenvolveu voce",
+        "foste criado", "foste desenvolvido", "foste feito",
+        "voce foi criado", "voce foi desenvolvido", "voce foi feito",
+        "apresenta te", "apresente se", "matola cai",
+        "de onde vens", "de onde voce vem"
+    };
+    const std::string p = " " + normalizar_para_busca(pergunta) + " ";
+    for (const char *chave : CHAVES) {
+        if (p.find(std::string(" ") + chave + " ") != std::string::npos) return true;
+    }
+    return false;
 }
 
 extern "C" {
@@ -120,21 +181,27 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeCompletion(
     // =====================================================
     // TEMPLATE DE CHAT (ChatML — é o formato do LFM2.5 e do Qwen)
     // O BOS (<|startoftext|>) é adicionado pelo tokenizador (add_special=true).
+    //
+    // Perguntas normais vão SEM system prompt (como no PocketPal).
+    // O system prompt de identidade só entra se perguntarem sobre o modelo.
     // =====================================================
-    static const char *SYSTEM_PROMPT =
+    static const char *SYSTEM_IDENTIDADE =
             "Tu és o Matola CAI. Fazes parte da família dos "
             "Modelos de Cadernos Artificiais Desenvolvidos em "
-            "Moçambique, criados pelo pesquisador Filipe Paulo "
-            "Felipe. Quando te perguntarem quem és, a tua "
-            "origem, quem te criou ou como foste desenvolvido, "
-            "usa esta informação pra responder com as tuas "
-            "próprias palavras, sempre em português de "
-            "Moçambique.";
+            "Moçambique, criados pelo pesquisador moçambicano "
+            "Filipe Paulo Felipe. Responde à pergunta com as "
+            "tuas próprias palavras.";
 
-    std::string prompt =
-            std::string("<|im_start|>system\n") + SYSTEM_PROMPT +
-            "<|im_end|>\n<|im_start|>user\n" + promptUsuario +
-            "<|im_end|>\n<|im_start|>assistant\n";
+    const bool identidade = pergunta_sobre_identidade(promptUsuario);
+
+    std::string prompt;
+    if (identidade) {
+        prompt += std::string("<|im_start|>system\n") + SYSTEM_IDENTIDADE + "<|im_end|>\n";
+    }
+    prompt += std::string("<|im_start|>user\n") + promptUsuario +
+              "<|im_end|>\n<|im_start|>assistant\n";
+
+    LOGI("Pergunta de identidade: %s", identidade ? "sim" : "nao");
 
     std::vector<llama_token> tokens;
     int n_tokens = llama_tokenize(mc->vocab, prompt.c_str(), (int32_t)prompt.size(), nullptr, 0, true, true);
