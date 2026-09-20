@@ -3,7 +3,7 @@
 #include <vector>
 #include <android/log.h>
 #include <random>
-
+ 
 #include "llama.h"
 
 #define TAG "MatolaLlamaJNI"
