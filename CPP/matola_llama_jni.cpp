@@ -4,6 +4,7 @@
 #include <android/log.h>
 #include <random>
 #include <cctype>
+#include <cmath>
 
 #include "llama.h"
 
@@ -297,6 +298,120 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeCompletion(
     aparar_utf8_incompleto(resultado);
 
     return env->NewStringUTF(resultado.c_str());
+}
+
+// =========================================================
+// ROTEADOR — escolher UMA opção (0..nOpcoes) com um único decode.
+// Sem loop de geração e sem sampling: lê os logits do PRIMEIRO token que o
+// modelo escreveria depois de "<|im_start|>assistant\n" e compara só os
+// dígitos "0".."nOpcoes". Devolve float[nOpcoes + 2]:
+//   [0]     = massa que o modelo dá a ESTES dígitos no vocabulário inteiro
+//             (se for baixa, o modelo queria dizer outra coisa)
+//   [1 + i] = probabilidade da opção i (i = 0 é "nenhuma"), normalizada só
+//             entre os dígitos
+// Devolve null em caso de erro. NÃO altera nativeCompletion.
+// =========================================================
+JNIEXPORT jfloatArray JNICALL
+Java_com_example_matolaia_apk_MatolaLlama_nativeEscolher(
+        JNIEnv *env, jobject /* this */,
+        jlong handle, jstring promptJ, jint nOpcoes) {
+
+    auto *mc = reinterpret_cast<MatolaContext *>(handle);
+
+    if (mc == nullptr || mc->ctx == nullptr) {
+        return nullptr;
+    }
+
+    int n = nOpcoes;
+    if (n < 1) n = 1;
+    if (n > 9) n = 9; // só dígitos de 1 token
+
+    const char *promptChars = env->GetStringUTFChars(promptJ, nullptr);
+    std::string pergunta(promptChars);
+    env->ReleaseStringUTFChars(promptJ, promptChars);
+
+    // Cada chamada começa do zero (igual ao nativeCompletion).
+    llama_memory_clear(llama_get_memory(mc->ctx), true);
+
+    // Sem system prompt: a identidade nunca entra na classificação.
+    const std::string prompt =
+            std::string("<|im_start|>user\n") + pergunta +
+            "<|im_end|>\n<|im_start|>assistant\n";
+
+    std::vector<llama_token> tokens;
+    int n_tokens = llama_tokenize(mc->vocab, prompt.c_str(), (int32_t)prompt.size(), nullptr, 0, true, true);
+    if (n_tokens < 0) {
+        tokens.resize(-n_tokens);
+        llama_tokenize(mc->vocab, prompt.c_str(), (int32_t)prompt.size(), tokens.data(), (int32_t)tokens.size(), true, true);
+    } else {
+        tokens.resize(n_tokens);
+        llama_tokenize(mc->vocab, prompt.c_str(), (int32_t)prompt.size(), tokens.data(), (int32_t)tokens.size(), true, true);
+    }
+
+    const int n_ctx = (int) llama_n_ctx(mc->ctx);
+    if (tokens.empty() || (int) tokens.size() >= n_ctx - 16) {
+        LOGE("Roteador: prompt invalido (%zu tokens, n_ctx=%d).", tokens.size(), n_ctx);
+        return nullptr;
+    }
+
+    // Token de cada dígito "0".."n" (primeiro token da tokenização do dígito).
+    std::vector<llama_token> ids((size_t) n + 1);
+    for (int d = 0; d <= n; d++) {
+        const std::string s = std::to_string(d);
+        llama_token t[8];
+        int k = llama_tokenize(mc->vocab, s.c_str(), (int32_t)s.size(), t, 8, false, false);
+        if (k <= 0) {
+            LOGE("Roteador: nao consegui tokenizar o digito %d.", d);
+            return nullptr;
+        }
+        if (k != 1) {
+            LOGI("Roteador: digito %d tokenizou em %d tokens (uso o primeiro).", d, k);
+        }
+        ids[(size_t) d] = t[0];
+    }
+
+    llama_batch batch = llama_batch_get_one(tokens.data(), (int32_t)tokens.size());
+    int rc = llama_decode(mc->ctx, batch);
+    if (rc != 0) {
+        LOGE("Roteador: llama_decode falhou (rc=%d).", rc);
+        return nullptr;
+    }
+
+    const float *logits = llama_get_logits_ith(mc->ctx, -1);
+    if (logits == nullptr) {
+        LOGE("Roteador: sem logits.");
+        return nullptr;
+    }
+
+    const int n_vocab = llama_vocab_n_tokens(mc->vocab);
+
+    // softmax estável sobre o vocabulário inteiro (só para a "massa")
+    float maxl = logits[0];
+    for (int i = 1; i < n_vocab; i++) {
+        if (logits[i] > maxl) maxl = logits[i];
+    }
+    double somaVocab = 0.0;
+    for (int i = 0; i < n_vocab; i++) {
+        somaVocab += std::exp((double)(logits[i] - maxl));
+    }
+
+    std::vector<double> e((size_t) n + 1);
+    double somaDigitos = 0.0;
+    for (int d = 0; d <= n; d++) {
+        e[(size_t) d] = std::exp((double)(logits[ids[(size_t) d]] - maxl));
+        somaDigitos += e[(size_t) d];
+    }
+
+    std::vector<float> saida((size_t) n + 2);
+    saida[0] = (float)(somaVocab > 0.0 ? somaDigitos / somaVocab : 0.0);
+    for (int d = 0; d <= n; d++) {
+        saida[(size_t) d + 1] = (float)(somaDigitos > 0.0 ? e[(size_t) d] / somaDigitos : 0.0);
+    }
+
+    jfloatArray arr = env->NewFloatArray((jsize) saida.size());
+    if (arr == nullptr) return nullptr;
+    env->SetFloatArrayRegion(arr, 0, (jsize) saida.size(), saida.data());
+    return arr;
 }
 
 JNIEXPORT void JNICALL
