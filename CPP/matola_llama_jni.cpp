@@ -608,6 +608,10 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeFree(
 // nativeCompletion / nativeEscolher.
 // =========================================================
 
+// Última razão de falha do nativeInit — sem Logcat à mão, é isto que
+// chega ao JS via nativeUltimoErro() (ver EmbedJavascriptBridge.ultimoErro()).
+static std::string g_ultimoErroEmbed;
+
 JNIEXPORT jlong JNICALL
 Java_com_example_matolaia_apk_MatolaEmbed_nativeInit(
         JNIEnv *env, jobject /* this */,
@@ -627,7 +631,8 @@ Java_com_example_matolaia_apk_MatolaEmbed_nativeInit(
 
     std::string erro;
     if (!carregar_npy_f16(caminhoCentroides.c_str(), ec->centroides, ec->n_grupos, ec->n_embd, erro)) {
-        LOGE("Embed: centroides: %s", erro.c_str());
+        g_ultimoErroEmbed = "centroides (" + caminhoCentroides + "): " + erro;
+        LOGE("Embed: %s", g_ultimoErroEmbed.c_str());
         delete ec;
         return 0;
     }
@@ -636,13 +641,16 @@ Java_com_example_matolaia_apk_MatolaEmbed_nativeInit(
     model_params.n_gpu_layers = 0;
     ec->model = llama_model_load_from_file(caminhoModelo.c_str(), model_params);
     if (ec->model == nullptr) {
-        LOGE("Embed: falha ao carregar o modelo.");
+        g_ultimoErroEmbed = "falha ao carregar o modelo (" + caminhoModelo + ") — ficheiro em falta, corrompido ou arquitectura nao suportada nesta build do llama.cpp";
+        LOGE("Embed: %s", g_ultimoErroEmbed.c_str());
         delete ec;
         return 0;
     }
 
     if (llama_model_n_embd(ec->model) != ec->n_embd) {
-        LOGE("Embed: dimensao do modelo (%d) != centroides (%d).", (int) llama_model_n_embd(ec->model), ec->n_embd);
+        g_ultimoErroEmbed = "dimensao do modelo (" + std::to_string(llama_model_n_embd(ec->model)) +
+                             ") != centroides (" + std::to_string(ec->n_embd) + ")";
+        LOGE("Embed: %s", g_ultimoErroEmbed.c_str());
         llama_model_free(ec->model);
         delete ec;
         return 0;
@@ -661,15 +669,24 @@ Java_com_example_matolaia_apk_MatolaEmbed_nativeInit(
 
     ec->ctx = llama_init_from_model(ec->model, ctx_params);
     if (ec->ctx == nullptr) {
-        LOGE("Embed: falha ao criar o contexto.");
+        g_ultimoErroEmbed = "falha ao criar o contexto (llama_init_from_model devolveu null)";
+        LOGE("Embed: %s", g_ultimoErroEmbed.c_str());
         llama_model_free(ec->model);
         delete ec;
         return 0;
     }
     ec->vocab = llama_model_get_vocab(ec->model);
 
+    g_ultimoErroEmbed.clear();
     LOGI("Embedder pronto: %d grupos x %d dims.", ec->n_grupos, ec->n_embd);
     return reinterpret_cast<jlong>(ec);
+}
+
+// Devolve a razão da última falha do nativeInit (ou "" se não houve/ficou pronto).
+JNIEXPORT jstring JNICALL
+Java_com_example_matolaia_apk_MatolaEmbed_nativeUltimoErro(
+        JNIEnv *env, jobject /* this */) {
+    return env->NewStringUTF(g_ultimoErroEmbed.c_str());
 }
 
 // Devolve float[2k]: [indice0, score0, indice1, score1, ...] (do melhor para o pior).
