@@ -18,6 +18,7 @@ jobs:
         with:
           repository: ggml-org/llama.cpp
           path: llama.cpp
+          ref: b9777
           fetch-depth: 1
 
       - name: Instalar o NDK
