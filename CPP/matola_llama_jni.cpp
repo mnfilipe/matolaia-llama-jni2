@@ -940,7 +940,7 @@ Java_com_example_matolaia_apk_MatolaColbert_nativeInit(
         delete cc;
         return 0;
     }
-    cc->n_dims = (int) llama_model_n_embd(cc->model);   // esperado: 128
+    cc->n_dims = (int) llama_model_n_embd_out(cc->model);   // saida real pos-Dense (128) — llama_model_n_embd() so da o backbone (1024)
 
     llama_context_params ctx_params = llama_context_default_params();
     ctx_params.n_ctx = 1024;
