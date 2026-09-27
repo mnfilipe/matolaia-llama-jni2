@@ -198,6 +198,22 @@ static void normalizar_l2(std::vector<float> &v) {
     for (float &x : v) x *= inv;
 }
 
+// Igual ao normalizar_l2 acima, mas por TOKEN: v tem n_tokens*n_dims floats
+// contiguos e cada bloco de n_dims (um vetor por token) e normalizado
+// independentemente. Necessario porque o llama.cpp devolve o output cru do
+// modelo (llama_get_embeddings) -- a normalizacao do ColBERT no PyLate e um
+// passo explicito em Python DEPOIS do forward, nao faz parte do grafo, logo
+// nao vem "de graca" so por o modelo ser o LFM2.5-ColBERT.
+static void normalizar_l2_por_token(std::vector<float> &v, int n_tokens, int n_dims) {
+    for (int t = 0; t < n_tokens; t++) {
+        float *base = v.data() + (size_t)t * n_dims;
+        double s = 0.0;
+        for (int k = 0; k < n_dims; k++) s += (double)base[k] * (double)base[k];
+        const float inv = s > 0.0 ? (float)(1.0 / std::sqrt(s)) : 0.0f;
+        for (int k = 0; k < n_dims; k++) base[k] *= inv;
+    }
+}
+
 // Devolve os k melhores (score, indice) por produto escalar, do maior para o menor.
 static void topk_produto_escalar(const std::vector<float> &C, int n, int d, const float *q,
                                  int k, std::vector<std::pair<float, int>> &saida) {
@@ -939,6 +955,12 @@ static bool colbert_embedir(MatolaColbertContext *cc, const std::string &texto,
     }
     n_tokens = n;
     out.assign(e, e + (size_t)n * cc->n_dims);
+    // llama_get_embeddings devolve o output cru do backbone+Dense -- o
+    // "ja L2-normalizado por token" e um passo do PyLate em Python, nao do
+    // grafo do modelo. Sem isto os scores saem numa escala errada (~45 em
+    // vez de ~0.8) e os gaps relativos ficam inflacionados dezenas de vezes,
+    // fazendo qualquer folga (mesmo bem alargada) filtrar errado.
+    normalizar_l2_por_token(out, n_tokens, cc->n_dims);
     llama_batch_free(batch);
     return true;
 }
