@@ -866,7 +866,15 @@ struct MatolaColbertContext {
     std::string ultimo_erro;   // NOVO — pra dar visibilidade no JS sem adb (padrao AndroidEmbed.ultimoErro())
 };
 
-static const int COLBERT_MAX_TOKENS = 512;   // blocos de artigo podem ser longos
+static const int COLBERT_MAX_TOKENS   = 512;  // blocos de artigo podem ser longos
+static const int COLBERT_QUERY_TOKENS = 32;   // "query augmentation" do ColBERT: o PyLate
+                                               // (usado no notebook p/ gerar o .mcb e calibrar
+                                               // folga=0.03) preenche SEMPRE a query com EOS
+                                               // ate 32 tokens -- este checkpoint nao tem [MASK],
+                                               // por isso usa EOS. Sem isto n_q sai menor e a
+                                               // distribuicao de scores no telemovel fica
+                                               // diferente da do Colab, fazendo a folga cortar
+                                               // blocos que deviam entrar (ver nota abaixo).
 static const char *COLBERT_PREFIXO_QUERY = "[Q] ";
 static const char *COLBERT_PREFIXO_DOC   = "[D] ";
 
@@ -883,7 +891,23 @@ static bool colbert_embedir(MatolaColbertContext *cc, const std::string &texto,
     tokens.resize((size_t)n);
     n = llama_tokenize(cc->vocab, prompt.c_str(), (int32_t)prompt.size(), tokens.data(), (int32_t)tokens.size(), true, false);
     if (n <= 0) { LOGE("Colbert: falha a tokenizar."); return false; }
-    if (n > COLBERT_MAX_TOKENS) n = COLBERT_MAX_TOKENS;
+
+    if (eh_query) {
+        // NOTA: aproxima a expansao do PyLate mas nao e identica -- la os
+        // tokens de EOS extra sao mascarados como KEY (os tokens reais nao
+        // os "veem"); aqui, sem mascara custom via llama.cpp, todos veem-se
+        // mutuamente (o backbone ja e bidirecional). Valida os scores contra
+        // o notebook antes de confiares cegamente na folga=0.03.
+        if (n > COLBERT_QUERY_TOKENS) {
+            n = COLBERT_QUERY_TOKENS;
+        } else if (n < COLBERT_QUERY_TOKENS) {
+            const llama_token eos = llama_vocab_eos(cc->vocab);
+            tokens.resize((size_t)COLBERT_QUERY_TOKENS, eos);
+            n = COLBERT_QUERY_TOKENS;
+        }
+    } else if (n > COLBERT_MAX_TOKENS) {
+        n = COLBERT_MAX_TOKENS;
+    }
 
     llama_batch batch = llama_batch_init(n, 0, 1);
     for (int i = 0; i < n; i++) {
