@@ -863,6 +863,7 @@ struct MatolaColbertContext {
     llama_context *ctx = nullptr;
     const llama_vocab *vocab = nullptr;
     int n_dims = 0;
+    std::string ultimo_erro;   // NOVO — pra dar visibilidade no JS sem adb (padrao AndroidEmbed.ultimoErro())
 };
 
 static const int COLBERT_MAX_TOKENS = 512;   // blocos de artigo podem ser longos
@@ -970,21 +971,41 @@ Java_com_example_matolaia_apk_MatolaColbert_nativeInit(
 // artigos carregados ao mesmo tempo com o mesmo modelo.
 JNIEXPORT jlong JNICALL
 Java_com_example_matolaia_apk_MatolaColbert_nativeCarregarIndice(
-        JNIEnv *env, jobject /* this */, jstring caminhoJ) {
+        JNIEnv *env, jobject /* this */, jlong handle, jstring caminhoJ) {
+
+    auto *cc = reinterpret_cast<MatolaColbertContext *>(handle);
+    if (cc == nullptr) return 0;
 
     const char *cs = env->GetStringUTFChars(caminhoJ, nullptr);
     const std::string caminho(cs);
     env->ReleaseStringUTFChars(caminhoJ, cs);
 
     auto *indice = new std::vector<BlocoColbert>();
-    int n_dims; std::string erro;
-    if (!carregar_indice_colbert(caminho.c_str(), n_dims, *indice, erro)) {
+    int n_dims_ficheiro; std::string erro;
+    if (!carregar_indice_colbert(caminho.c_str(), n_dims_ficheiro, *indice, erro)) {
+        cc->ultimo_erro = erro;
         LOGE("Colbert: indice: %s", erro.c_str());
         delete indice;
         return 0;
     }
-    LOGI("Indice carregado: %d blocos, n_dims=%d.", (int) indice->size(), n_dims);
+    if (n_dims_ficheiro != cc->n_dims) {
+        cc->ultimo_erro = "dims incompativeis: ficheiro=" + std::to_string(n_dims_ficheiro) +
+                           " modelo=" + std::to_string(cc->n_dims);
+        LOGE("Colbert: %s", cc->ultimo_erro.c_str());
+        delete indice;
+        return 0;
+    }
+    cc->ultimo_erro.clear();
+    LOGI("Indice carregado: %d blocos, n_dims=%d.", (int) indice->size(), n_dims_ficheiro);
     return reinterpret_cast<jlong>(indice);
+}
+
+// NOVO — devolve o ultimo erro registado neste handle (indice ou blocosRelevantes).
+JNIEXPORT jstring JNICALL
+Java_com_example_matolaia_apk_MatolaColbert_nativeUltimoErro(
+        JNIEnv *env, jobject /* this */, jlong handle) {
+    auto *cc = reinterpret_cast<MatolaColbertContext *>(handle);
+    return env->NewStringUTF(cc ? cc->ultimo_erro.c_str() : "");
 }
 
 JNIEXPORT void JNICALL
@@ -1012,7 +1033,11 @@ Java_com_example_matolaia_apk_MatolaColbert_nativeBlocosRelevantes(
     const auto t0 = std::chrono::steady_clock::now();
     std::vector<float> q;
     int n_q = 0;
-    if (!colbert_embedir(cc, texto, /*eh_query=*/true, q, n_q)) return nullptr;
+    if (!colbert_embedir(cc, texto, /*eh_query=*/true, q, n_q)) {
+        cc->ultimo_erro = "colbert_embedir falhou (ver Logcat 'Colbert:' para o motivo exacto)";
+        return nullptr;
+    }
+    cc->ultimo_erro.clear();
     const auto t1 = std::chrono::steady_clock::now();
 
     std::vector<std::pair<float, int>> rel;
