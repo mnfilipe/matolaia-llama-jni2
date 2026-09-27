@@ -277,6 +277,104 @@ static bool embedir_texto(MatolaEmbedContext *ec, const std::string &texto, std:
     return true;
 }
 
+// ============================================================
+// COLBERT (busca extrativa por artigo) — funcoes auxiliares puras
+// ============================================================
+// ==== PURE-BEGIN
+
+struct BlocoColbert {
+    std::string titulo;
+    int n_tokens = 0;
+    std::vector<float> vetores;   // n_tokens x n_dims, contiguo, ja L2-normalizado
+};
+
+// Le o formato .mcb (ver formato_indice.py). Usa a mesma conversao half->float
+// ja validada no MatolaEmbed (half_para_float).
+static bool carregar_indice_colbert(const char *caminho, int &n_dims,
+                                    std::vector<BlocoColbert> &blocos, std::string &erro) {
+    FILE *f = std::fopen(caminho, "rb");
+    if (!f) { erro = "nao consegui abrir o indice .mcb"; return false; }
+
+    unsigned char magic[4];
+    if (std::fread(magic, 1, 4, f) != 4 || std::memcmp(magic, "MCB1", 4) != 0) {
+        std::fclose(f); erro = "magic invalido (nao e um .mcb)"; return false;
+    }
+    uint16_t n_dims16; uint32_t n_blocos;
+    if (std::fread(&n_dims16, 2, 1, f) != 1 || std::fread(&n_blocos, 4, 1, f) != 1) {
+        std::fclose(f); erro = "cabecalho truncado"; return false;
+    }
+    n_dims = n_dims16;
+    blocos.clear();
+    blocos.reserve(n_blocos);
+
+    for (uint32_t i = 0; i < n_blocos; i++) {
+        uint16_t len_titulo;
+        if (std::fread(&len_titulo, 2, 1, f) != 1) { std::fclose(f); erro = "bloco truncado (titulo)"; return false; }
+        std::string titulo(len_titulo, '\0');
+        if (len_titulo > 0 && std::fread(&titulo[0], 1, len_titulo, f) != len_titulo) {
+            std::fclose(f); erro = "bloco truncado (texto do titulo)"; return false;
+        }
+        uint32_t n_tok;
+        if (std::fread(&n_tok, 4, 1, f) != 1) { std::fclose(f); erro = "bloco truncado (n_tokens)"; return false; }
+
+        const size_t total = (size_t)n_tok * (size_t)n_dims;
+        std::vector<uint16_t> bruto(total);
+        if (total > 0 && std::fread(bruto.data(), 2, total, f) != total) {
+            std::fclose(f); erro = "bloco truncado (vetores)"; return false;
+        }
+        BlocoColbert b;
+        b.titulo = std::move(titulo);
+        b.n_tokens = (int)n_tok;
+        b.vetores.resize(total);
+        for (size_t k = 0; k < total; k++) b.vetores[k] = half_para_float(bruto[k]);
+        blocos.push_back(std::move(b));
+    }
+    std::fclose(f);
+    return true;
+}
+
+// MaxSim: para cada vetor de q (n_q x n_dims), o maior produto escalar contra
+// qualquer vetor de d (n_d x n_dims); soma esses maximos.
+static float maxsim(const float *q, int n_q, const float *d, int n_d, int n_dims) {
+    float soma = 0.0f;
+    for (int i = 0; i < n_q; i++) {
+        const float *qi = q + (size_t)i * n_dims;
+        float melhor = -1e30f;
+        for (int j = 0; j < n_d; j++) {
+            const float *dj = d + (size_t)j * n_dims;
+            float s = 0.0f;
+            for (int k = 0; k < n_dims; k++) s += qi[k] * dj[k];
+            if (s > melhor) melhor = s;
+        }
+        soma += melhor;
+    }
+    return soma;
+}
+
+// Ordena os blocos por score/n_q (maior primeiro) e devolve so os que ficam a
+// menos de `folga` do melhor, ate `maximo` blocos -- mesma regra da celula 5
+// do Colab (margem relativa, nao limiar absoluto).
+static void blocos_relevantes(const std::vector<BlocoColbert> &blocos, int n_dims,
+                              const float *q, int n_q, float folga, int maximo,
+                              std::vector<std::pair<float, int>> &saida) {
+    std::vector<std::pair<float, int>> todos;
+    todos.reserve(blocos.size());
+    for (size_t i = 0; i < blocos.size(); i++) {
+        const auto &b = blocos[i];
+        float s = b.n_tokens > 0 ? maxsim(q, n_q, b.vetores.data(), b.n_tokens, n_dims) / n_q : -1e30f;
+        todos.emplace_back(s, (int)i);
+    }
+    std::sort(todos.begin(), todos.end(), [](auto &a, auto &b) { return a.first > b.first; });
+    saida.clear();
+    if (todos.empty()) return;
+    const float melhor = todos[0].first;
+    for (auto &par : todos) {
+        if ((int)saida.size() >= maximo || par.first < melhor - folga) break;
+        saida.push_back(par);
+    }
+}
+// ==== PURE-END
+
 extern "C" {
 
 JNIEXPORT jlong JNICALL
@@ -410,7 +508,7 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeCompletion(
     llama_sampler_chain_params sparams = llama_sampler_chain_default_params();
     llama_sampler *smpl = llama_sampler_chain_init(sparams);
 
-    llama_sampler_chain_add(smpl, llama_sampler_init_penalties(64, 1.05f, 0.0f, 0.0f));
+    llama_sampler_chain_add(smpl, llama_sampler_init_penalties(llama_vocab_n_tokens(mc->vocab), 64, 1.05f, 0.0f, 0.0f));
     llama_sampler_chain_add(smpl, llama_sampler_init_top_k(40));
     llama_sampler_chain_add(smpl, llama_sampler_init_top_p(0.95f, 1));
     llama_sampler_chain_add(smpl, llama_sampler_init_min_p(0.05f, 1));
@@ -608,10 +706,6 @@ Java_com_example_matolaia_apk_MatolaLlama_nativeFree(
 // nativeCompletion / nativeEscolher.
 // =========================================================
 
-// Última razão de falha do nativeInit — sem Logcat à mão, é isto que
-// chega ao JS via nativeUltimoErro() (ver EmbedJavascriptBridge.ultimoErro()).
-static std::string g_ultimoErroEmbed;
-
 JNIEXPORT jlong JNICALL
 Java_com_example_matolaia_apk_MatolaEmbed_nativeInit(
         JNIEnv *env, jobject /* this */,
@@ -631,8 +725,7 @@ Java_com_example_matolaia_apk_MatolaEmbed_nativeInit(
 
     std::string erro;
     if (!carregar_npy_f16(caminhoCentroides.c_str(), ec->centroides, ec->n_grupos, ec->n_embd, erro)) {
-        g_ultimoErroEmbed = "centroides (" + caminhoCentroides + "): " + erro;
-        LOGE("Embed: %s", g_ultimoErroEmbed.c_str());
+        LOGE("Embed: centroides: %s", erro.c_str());
         delete ec;
         return 0;
     }
@@ -641,16 +734,13 @@ Java_com_example_matolaia_apk_MatolaEmbed_nativeInit(
     model_params.n_gpu_layers = 0;
     ec->model = llama_model_load_from_file(caminhoModelo.c_str(), model_params);
     if (ec->model == nullptr) {
-        g_ultimoErroEmbed = "falha ao carregar o modelo (" + caminhoModelo + ") — ficheiro em falta, corrompido ou arquitectura nao suportada nesta build do llama.cpp";
-        LOGE("Embed: %s", g_ultimoErroEmbed.c_str());
+        LOGE("Embed: falha ao carregar o modelo.");
         delete ec;
         return 0;
     }
 
     if (llama_model_n_embd(ec->model) != ec->n_embd) {
-        g_ultimoErroEmbed = "dimensao do modelo (" + std::to_string(llama_model_n_embd(ec->model)) +
-                             ") != centroides (" + std::to_string(ec->n_embd) + ")";
-        LOGE("Embed: %s", g_ultimoErroEmbed.c_str());
+        LOGE("Embed: dimensao do modelo (%d) != centroides (%d).", (int) llama_model_n_embd(ec->model), ec->n_embd);
         llama_model_free(ec->model);
         delete ec;
         return 0;
@@ -669,24 +759,15 @@ Java_com_example_matolaia_apk_MatolaEmbed_nativeInit(
 
     ec->ctx = llama_init_from_model(ec->model, ctx_params);
     if (ec->ctx == nullptr) {
-        g_ultimoErroEmbed = "falha ao criar o contexto (llama_init_from_model devolveu null)";
-        LOGE("Embed: %s", g_ultimoErroEmbed.c_str());
+        LOGE("Embed: falha ao criar o contexto.");
         llama_model_free(ec->model);
         delete ec;
         return 0;
     }
     ec->vocab = llama_model_get_vocab(ec->model);
 
-    g_ultimoErroEmbed.clear();
     LOGI("Embedder pronto: %d grupos x %d dims.", ec->n_grupos, ec->n_embd);
     return reinterpret_cast<jlong>(ec);
-}
-
-// Devolve a razão da última falha do nativeInit (ou "" se não houve/ficou pronto).
-JNIEXPORT jstring JNICALL
-Java_com_example_matolaia_apk_MatolaEmbed_nativeUltimoErro(
-        JNIEnv *env, jobject /* this */) {
-    return env->NewStringUTF(g_ultimoErroEmbed.c_str());
 }
 
 // Devolve float[2k]: [indice0, score0, indice1, score1, ...] (do melhor para o pior).
@@ -764,6 +845,206 @@ Java_com_example_matolaia_apk_MatolaEmbed_nativeFree(
         if (ec->ctx) llama_free(ec->ctx);
         if (ec->model) llama_model_free(ec->model);
         delete ec;
+    }
+}
+
+
+// =========================================================
+// COLBERT — classe Java MatolaColbert
+// Busca extrativa por artigo (Estruturada com Agrupamento por Entidade):
+// texto -> vetores por token (LFM2.5-ColBERT-350M) -> MaxSim contra os
+// blocos de UM artigo -> blocos relevantes por margem relativa.
+// Modelo/contexto proprios, separados do gerador e do MatolaEmbed.
+// pooling_type = NONE (queremos TODOS os vetores de token, nao um so).
+// =========================================================
+
+struct MatolaColbertContext {
+    llama_model *model = nullptr;
+    llama_context *ctx = nullptr;
+    const llama_vocab *vocab = nullptr;
+    int n_dims = 0;
+};
+
+static const int COLBERT_MAX_TOKENS = 512;   // blocos de artigo podem ser longos
+static const char *COLBERT_PREFIXO_QUERY = "[Q] ";
+static const char *COLBERT_PREFIXO_DOC   = "[D] ";
+
+// Devolve os vetores de TODOS os tokens (n_tokens x n_dims), ja normalizados
+// pelo proprio modelo (o LFM2.5-ColBERT ja sai L2-normalizado por token).
+static bool colbert_embedir(MatolaColbertContext *cc, const std::string &texto,
+                            bool eh_query, std::vector<float> &out, int &n_tokens) {
+    const std::string prefixo = eh_query ? COLBERT_PREFIXO_QUERY : COLBERT_PREFIXO_DOC;
+    const std::string prompt = prefixo + texto;
+
+    std::vector<llama_token> tokens;
+    int n = -llama_tokenize(cc->vocab, prompt.c_str(), (int32_t)prompt.size(), nullptr, 0, true, false);
+    if (n <= 0) { LOGE("Colbert: tokenizacao vazia."); return false; }
+    tokens.resize((size_t)n);
+    n = llama_tokenize(cc->vocab, prompt.c_str(), (int32_t)prompt.size(), tokens.data(), (int32_t)tokens.size(), true, false);
+    if (n <= 0) { LOGE("Colbert: falha a tokenizar."); return false; }
+    if (n > COLBERT_MAX_TOKENS) n = COLBERT_MAX_TOKENS;
+
+    llama_batch batch = llama_batch_init(n, 0, 1);
+    for (int i = 0; i < n; i++) {
+        batch.token[i] = tokens[(size_t)i];
+        batch.pos[i] = i;
+        batch.n_seq_id[i] = 1;
+        batch.seq_id[i][0] = 0;
+        batch.logits[i] = 1;
+    }
+    batch.n_tokens = n;
+
+    auto mem = llama_get_memory(cc->ctx);
+    if (mem) llama_memory_clear(mem, true);
+
+    const int rc = llama_decode(cc->ctx, batch);
+    if (rc != 0) {
+        LOGE("Colbert: llama_decode falhou (rc=%d).", rc);
+        llama_batch_free(batch);
+        return false;
+    }
+
+    // pooling NONE -> llama_get_embeddings devolve (n_tokens x n_dims) contiguo,
+    // na mesma ordem dos tokens do batch.
+    const float *e = llama_get_embeddings(cc->ctx);
+    if (e == nullptr) {
+        LOGE("Colbert: sem embeddings (pooling errado?).");
+        llama_batch_free(batch);
+        return false;
+    }
+    n_tokens = n;
+    out.assign(e, e + (size_t)n * cc->n_dims);
+    llama_batch_free(batch);
+    return true;
+}
+
+JNIEXPORT jlong JNICALL
+Java_com_example_matolaia_apk_MatolaColbert_nativeInit(
+        JNIEnv *env, jobject /* this */, jstring modelPath, jint nThreads) {
+
+    static bool backend_ok = false;
+    if (!backend_ok) { llama_backend_init(); backend_ok = true; }
+
+    const char *mp = env->GetStringUTFChars(modelPath, nullptr);
+    const std::string caminhoModelo(mp);
+    env->ReleaseStringUTFChars(modelPath, mp);
+
+    auto *cc = new MatolaColbertContext();
+
+    llama_model_params model_params = llama_model_default_params();
+    model_params.n_gpu_layers = 0;
+    cc->model = llama_model_load_from_file(caminhoModelo.c_str(), model_params);
+    if (cc->model == nullptr) {
+        LOGE("Colbert: falha ao carregar o modelo.");
+        delete cc;
+        return 0;
+    }
+    cc->n_dims = (int) llama_model_n_embd(cc->model);   // esperado: 128
+
+    llama_context_params ctx_params = llama_context_default_params();
+    ctx_params.n_ctx = 1024;
+    ctx_params.n_batch = 1024;
+    ctx_params.n_ubatch = 1024;
+    ctx_params.n_seq_max = 1;
+    ctx_params.embeddings = true;
+    ctx_params.pooling_type = LLAMA_POOLING_TYPE_NONE;  // um vetor por TOKEN, nao um so
+    ctx_params.attention_type = LLAMA_ATTENTION_TYPE_NON_CAUSAL;
+    ctx_params.n_threads = nThreads > 0 ? nThreads : 4;
+    ctx_params.n_threads_batch = ctx_params.n_threads;
+
+    cc->ctx = llama_init_from_model(cc->model, ctx_params);
+    if (cc->ctx == nullptr) {
+        LOGE("Colbert: falha ao criar o contexto.");
+        llama_model_free(cc->model);
+        delete cc;
+        return 0;
+    }
+    cc->vocab = llama_model_get_vocab(cc->model);
+
+    LOGI("Colbert pronto: n_dims=%d.", cc->n_dims);
+    return reinterpret_cast<jlong>(cc);
+}
+
+// Carrega o indice .mcb de UM artigo. Devolve um handle proprio do indice
+// (independente do handle do modelo/contexto), para poderes ter varios
+// artigos carregados ao mesmo tempo com o mesmo modelo.
+JNIEXPORT jlong JNICALL
+Java_com_example_matolaia_apk_MatolaColbert_nativeCarregarIndice(
+        JNIEnv *env, jobject /* this */, jstring caminhoJ) {
+
+    const char *cs = env->GetStringUTFChars(caminhoJ, nullptr);
+    const std::string caminho(cs);
+    env->ReleaseStringUTFChars(caminhoJ, cs);
+
+    auto *indice = new std::vector<BlocoColbert>();
+    int n_dims; std::string erro;
+    if (!carregar_indice_colbert(caminho.c_str(), n_dims, *indice, erro)) {
+        LOGE("Colbert: indice: %s", erro.c_str());
+        delete indice;
+        return 0;
+    }
+    LOGI("Indice carregado: %d blocos, n_dims=%d.", (int) indice->size(), n_dims);
+    return reinterpret_cast<jlong>(indice);
+}
+
+JNIEXPORT void JNICALL
+Java_com_example_matolaia_apk_MatolaColbert_nativeLibertarIndice(
+        JNIEnv * /* env */, jobject /* this */, jlong handleIndice) {
+    auto *indice = reinterpret_cast<std::vector<BlocoColbert> *>(handleIndice);
+    delete indice;
+}
+
+// Devolve float[3k]: para cada bloco relevante, [indice, score, n_tokens_do_query]
+// (n_tokens_do_query repetido em cada linha, para o Java saber sem outra chamada).
+JNIEXPORT jfloatArray JNICALL
+Java_com_example_matolaia_apk_MatolaColbert_nativeBlocosRelevantes(
+        JNIEnv *env, jobject /* this */,
+        jlong handle, jlong handleIndice, jstring textoJ, jfloat folga, jint maximo) {
+
+    auto *cc = reinterpret_cast<MatolaColbertContext *>(handle);
+    auto *indice = reinterpret_cast<std::vector<BlocoColbert> *>(handleIndice);
+    if (cc == nullptr || cc->ctx == nullptr || indice == nullptr) return nullptr;
+
+    const char *tc = env->GetStringUTFChars(textoJ, nullptr);
+    const std::string texto(tc);
+    env->ReleaseStringUTFChars(textoJ, tc);
+
+    const auto t0 = std::chrono::steady_clock::now();
+    std::vector<float> q;
+    int n_q = 0;
+    if (!colbert_embedir(cc, texto, /*eh_query=*/true, q, n_q)) return nullptr;
+    const auto t1 = std::chrono::steady_clock::now();
+
+    std::vector<std::pair<float, int>> rel;
+    blocos_relevantes(*indice, cc->n_dims, q.data(), n_q,
+                      folga, maximo > 0 ? maximo : 5, rel);
+    const auto t2 = std::chrono::steady_clock::now();
+
+    LOGI("Colbert: query %lld ms | busca %lld ms | %d blocos relevantes",
+         (long long) std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count(),
+         (long long) std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count(),
+         (int) rel.size());
+
+    std::vector<float> saida;
+    for (auto &par : rel) {
+        saida.push_back((float) par.second);
+        saida.push_back(par.first);
+        saida.push_back((float) n_q);
+    }
+    jfloatArray arr = env->NewFloatArray((jsize) saida.size());
+    if (arr == nullptr) return nullptr;
+    env->SetFloatArrayRegion(arr, 0, (jsize) saida.size(), saida.data());
+    return arr;
+}
+
+JNIEXPORT void JNICALL
+Java_com_example_matolaia_apk_MatolaColbert_nativeFree(
+        JNIEnv * /* env */, jobject /* this */, jlong handle) {
+    auto *cc = reinterpret_cast<MatolaColbertContext *>(handle);
+    if (cc != nullptr) {
+        if (cc->ctx) llama_free(cc->ctx);
+        if (cc->model) llama_model_free(cc->model);
+        delete cc;
     }
 }
 
